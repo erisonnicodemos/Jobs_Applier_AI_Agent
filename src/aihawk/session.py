@@ -10,6 +10,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from openai import AsyncOpenAI
 
@@ -49,7 +50,7 @@ class Session:
         self.config = load_config(workspace)
         self.plugins: tuple[Plugin, ...] = load_plugins(workspace)
         self.store = Store(self.config.store_file)
-        self.telemetry = Telemetry(self.config.data_dir)
+        self.telemetry = Telemetry(self.config.data_dir, gateway=urlsplit(self.config.base_url).hostname or self.config.provider)
         import_answers_file(self.config, self.store)
         ensure_account_password(self.store)
         self._client: AsyncOpenAI | None = None

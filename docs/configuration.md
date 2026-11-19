@@ -25,7 +25,7 @@ OpenAI credentials from the environment or `openai-key` are kept separate from O
 
 ## What it costs
 
-AIHawk counts the tokens of every model call and prices them with the gateway's own list, read once per start. The details of each application, on `s`, say what it cost. Jev's calls, which score the jobs, are not counted: they go through another endpoint and cost under a cent per hundred postings.
+With OrcaRouter, AIHawk counts the tokens of every model call and prices them with the gateway's own list, read once per start. The details of each application, on `s`, say what it cost. Jev's calls, which score the jobs, are not counted: they go through another endpoint and cost under a cent per hundred postings. With direct OpenAI, token usage is tracked but the app cannot derive a reliable dollar charge from OrcaRouter's pricing endpoint; the OpenAI dashboard is the source of truth.
 
 ## The accounts it made
 

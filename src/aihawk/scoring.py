@@ -1,5 +1,4 @@
-"""Jev's verdict on each posting: one closed question, whether the job is in line with the candidate, answered through
-OrcaRouter with how sure the yes is. That certainty is the posting's score, from 1 to 5."""
+"""Evaluate how well postings fit a candidate using OrcaRouter's Jev or OpenAI Structured Outputs."""
 
 from __future__ import annotations
 
@@ -131,8 +130,6 @@ async def _read_openai(
             ]
         if not_answering(error):
             return [NOT_JUDGED] * len(jobs)
-        from aihawk import errors
-
         why(errors.explained(error))
         return [None] * len(jobs)
     values: list[Value] = []
