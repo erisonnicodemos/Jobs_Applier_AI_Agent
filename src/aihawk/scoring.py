@@ -1,5 +1,4 @@
-"""Jev's verdict on each posting: one closed question, whether the job is in line with the candidate, answered through
-OrcaRouter with how sure the yes is. That certainty is the posting's score, from 1 to 5."""
+"""Evaluate how well postings fit a candidate using OrcaRouter's Jev or OpenAI Structured Outputs."""
 
 from __future__ import annotations
 
@@ -13,7 +12,7 @@ from openai import APIStatusError, AsyncOpenAI
 
 from aihawk import errors
 from aihawk.database import Job
-from aihawk.llm import account_problem, not_answering, refused
+from aihawk.llm import account_problem, not_answering, refused, structured
 
 DESCRIPTION_CHARS = 24000
 DECISION_ENDPOINT = "/systemone"
@@ -21,6 +20,9 @@ DECISION_ENDPOINT = "/systemone"
 # posting here. A batch is also kept to MAX_CHARS, a rough cap on its size at about four characters a token.
 MAX_POSTINGS = 512
 MAX_CHARS = 180_000 * 4
+# Direct OpenAI requests use smaller batches to bound tokens, cost and burst rate limits.
+OPENAI_MAX_POSTINGS = 12
+OPENAI_MAX_CHARS = 50_000
 # The words an endpoint's refusal uses for a request or context that is too big, which a smaller batch can cure.
 TOO_LARGE = re.compile(r"context|too (?:large|long|many)")
 
@@ -51,14 +53,24 @@ def score(certainty: float) -> float:
     return round(1 + 4 * min(1.0, max(0.0, certainty)), 1)
 
 
-async def fits(client: AsyncOpenAI, model: str, cv: str, jobs: list[Job], asked: str, why: Callable[[str], None]) -> list[Value]:
-    """How sure Jev is that each posting is in line, in order; None where it gave no verdict, NOT_JUDGED where the request
-    got no answer at all. The groups go at once. `why` is told, once per request that cannot work as it is, in plain words why."""
+async def fits(
+    client: AsyncOpenAI, model: str, cv: str, jobs: list[Job], asked: str, why: Callable[[str], None],
+    provider: str = "orcarouter",
+) -> list[Value]:
+    """Score postings with OrcaRouter's Jev endpoint or OpenAI structured chat responses."""
+    if provider == "openai":
+        # Sequential small batches prevent hundreds of simultaneous paid requests.
+        result: list[Value] = []
+        for group in groups(model, cv, jobs, asked, OPENAI_MAX_POSTINGS, OPENAI_MAX_CHARS):
+            result.extend(await _read_openai(client, model, cv, group, asked, why))
+        return result
     parts = await asyncio.gather(*(_read(client, model, cv, group, asked, why) for group in groups(model, cv, jobs, asked)))
     return [value for part in parts for value in part]
 
 
-def groups(model: str, cv: str, jobs: list[Job], asked: str) -> list[list[Job]]:
+def groups(
+    model: str, cv: str, jobs: list[Job], asked: str, max_postings: int = MAX_POSTINGS, max_chars: int = MAX_CHARS,
+) -> list[list[Job]]:
     """In order, each group takes the next postings while it has fewer than MAX_POSTINGS and its request stays under
     MAX_CHARS. A posting's size is counted once, not the whole request again for each one."""
     base = len(json.dumps(request_body(model, cv, [], asked), ensure_ascii=False))
@@ -67,7 +79,7 @@ def groups(model: str, cv: str, jobs: list[Job], asked: str) -> list[list[Job]]:
     for job in jobs:
         index = len(out[-1]) if out else 0
         added = len(json.dumps({_name(index): _posting(job), **_question(index, job, asked)}, ensure_ascii=False)) + 8
-        if out and len(out[-1]) < MAX_POSTINGS and size + added <= MAX_CHARS:
+        if out and len(out[-1]) < max_postings and size + added <= max_chars:
             out[-1].append(job)
             size += added
         else:
@@ -81,6 +93,56 @@ def too_large(error: BaseException) -> bool:
     if not isinstance(error, APIStatusError):
         return False
     return error.status_code == 413 or (error.status_code == 400 and TOO_LARGE.search(str(error).lower()) is not None)
+
+
+async def _read_openai(
+    client: AsyncOpenAI, model: str, cv: str, jobs: list[Job], asked: str, why: Callable[[str], None],
+) -> list[Value]:
+    """The OpenAI-compatible replacement for OrcaRouter's proprietary /systemone endpoint."""
+    keys = [f"{_name(index)}_fit" for index in range(len(jobs))]
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": keys,
+        "properties": {
+            key: {"type": "number", "description": "Fit confidence between 0.0 (certain no) and 1.0 (certain yes)."}
+            for key in keys
+        },
+    }
+    postings = {_name(index): _posting(job) for index, job in enumerate(jobs)}
+    try:
+        answer = await structured(
+            client, model,
+            "You assess candidate-job fit. Judge each posting independently using only the CV, goals, location eligibility "
+            "and job description. For each requested key give a numeric confidence between 0 and 1. "
+            "A remote job restricted to another country is not eligible. Never infer experience absent from the CV.",
+            json.dumps({"cv": cv, "question": asked, "postings": postings}, ensure_ascii=False),
+            "job_fit", schema,
+        )
+    except Exception as error:
+        if refused(error) or account_problem(error):
+            raise
+        if too_large(error) and len(jobs) > 1:
+            middle = len(jobs) // 2
+            return [
+                *await _read_openai(client, model, cv, jobs[:middle], asked, why),
+                *await _read_openai(client, model, cv, jobs[middle:], asked, why),
+            ]
+        if not_answering(error):
+            return [NOT_JUDGED] * len(jobs)
+        why(errors.explained(error))
+        return [None] * len(jobs)
+    values: list[Value] = []
+    for key in keys:
+        value = answer.get(key)
+        try:
+            certainty = float(value) if not isinstance(value, bool) else -1
+        except (TypeError, ValueError):
+            certainty = -1
+        values.append(certainty if 0.0 <= certainty <= 1.0 else None)
+    if any(value is None for value in values):
+        why("The AI service left some out.")
+    return values
 
 
 async def _read(client: AsyncOpenAI, model: str, cv: str, jobs: list[Job], asked: str, why: Callable[[str], None]) -> list[Value]:

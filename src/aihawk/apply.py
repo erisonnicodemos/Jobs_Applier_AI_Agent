@@ -30,7 +30,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from openai import AsyncOpenAI
 
-from aihawk.config import DRY_RUN_ENV, KEY_ENV, dry_run
+from aihawk.config import DRY_RUN_ENV, KEY_ENV, OPENAI_KEY_ENV, dry_run
 from aihawk.database import Job
 from aihawk.llm import SPEND, chat, not_answering, structured
 from aihawk.store import Proof, safe_name
@@ -804,7 +804,7 @@ async def _open_browser(session: Browser, profile: Path) -> None:
 def server_parameters(upload_dir: Path, home: Path) -> StdioServerParameters:
     # The browser is given the environment without the model's key: nothing it does needs that key.
     environment = {
-        **{name: value for name, value in os.environ.items() if name != KEY_ENV},
+        **{name: value for name, value in os.environ.items() if name not in (KEY_ENV, OPENAI_KEY_ENV)},
         "INVISIBLE_MCP_HOST_MANAGED": "1",
         "INVISIBLE_MCP_UPLOAD_DIRS": str(upload_dir),
         "INVISIBLE_MCP_HOME": str(home),

@@ -1,4 +1,4 @@
-"""The one model gateway, OrcaRouter: OpenAI's chat API, the cost of its calls and how a failed call is told."""
+"""The model gateway: OpenAI-compatible chat calls, usage and failure handling."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from openai import (
     RateLimitError,
 )
 
-from aihawk.config import DEFAULT_BASE_URL, KEY_ENV, KEY_URL, Config, ConfigError
+from aihawk.config import Config, ConfigError
 
 # The SDK's own default is ten minutes a try, and a model that hangs would hold a request that long.
 TIMEOUT = 180.0
@@ -154,14 +154,13 @@ def not_answering(error: BaseException) -> bool:
 
 
 def account_problem(error: BaseException) -> bool:
-    """Whether the service refused for what is about the account and not about one posting: no credit left (402), no right to
-    ask (403), or nothing there to ask (404). Asking again changes nothing, and nothing is set aside for it."""
-    return isinstance(error, APIStatusError) and error.status_code in (402, 403, 404)
+    """Account-wide failures, including OpenAI's insufficient_quota (HTTP 429)."""
+    return isinstance(error, APIStatusError) and (error.status_code in (402, 403, 404) or cause(error) == "no_credit")
 
 
 def no_credit(error: BaseException) -> bool:
-    """Whether the account has no credit: the service answers 402."""
-    return isinstance(error, APIStatusError) and error.status_code == 402
+    """Whether the provider reports exhausted credits, not an ordinary rate limit."""
+    return isinstance(error, APIStatusError) and cause(error) == "no_credit"
 
 
 # The end of an OrcaRouter message, which names the request for its support and tells a person nothing.
@@ -198,6 +197,8 @@ def cause(error: BaseException) -> str:
     if not isinstance(error, APIStatusError):
         return ""
     code, message = reply(error)
+    if error.status_code == 429 and code == "insufficient_quota":
+        return "no_credit"
     if error.status_code == 402:
         return "free_calls_used" if code == "free_quota_exhausted" else "no_credit"
     if error.status_code != 403:
@@ -243,6 +244,8 @@ def explain(error: Exception, step: str = "press → to go on.") -> str:
     for the place the call failed in. The error's own text stays out, but for a refusal nothing explains: the key can be in it."""
     why = cause(error)
     if why == "no_credit":
+        if isinstance(error, APIStatusError) and error.status_code == 429:
+            return f"Your OpenAI API quota or credits are exhausted. Check billing at platform.openai.com, then {step}"
         return f"Your OrcaRouter account has no credit yet. Add a few dollars at orcarouter.ai, then {step}"
     if why == "free_calls_used":
         return f"The free calls for today are used up. Add credit at orcarouter.ai, then {step}"
@@ -276,9 +279,9 @@ def explain(error: Exception, step: str = "press → to go on.") -> str:
 def make_client(config: Config) -> AsyncOpenAI:
     key = config.api_key()
     if not key:
-        raise ConfigError(f"no model key: set {KEY_ENV} (create one at {KEY_URL})")
+        raise ConfigError(f"no model key: set {config.key_env} (create one at {config.key_url})")
     # The SDK retries 429s and 5xx itself and honours Retry-After, which is all OrcaRouter sends about its limits.
-    return AsyncOpenAI(base_url=DEFAULT_BASE_URL, api_key=key, max_retries=5, timeout=TIMEOUT)
+    return AsyncOpenAI(base_url=config.base_url, api_key=key, max_retries=5, timeout=TIMEOUT)
 
 
 async def structured(client: AsyncOpenAI, model: str, system: str, user: str, name: str, schema: dict[str, Any]) -> dict[str, Any]:

@@ -147,8 +147,9 @@ def install_id(data_dir: Path) -> str:
 class Telemetry:
     """The events of one run of AIHawk, and how far its start came: where people stop before their first search."""
 
-    def __init__(self, data_dir: Path) -> None:
+    def __init__(self, data_dir: Path, gateway: str = GATEWAY) -> None:
         self.data_dir = data_dir
+        self.gateway = gateway
         self.opened = time.monotonic()
         self.last_step = "opened"
         self.searched = False
@@ -201,7 +202,7 @@ class Telemetry:
         site is the plugin's name, or the vendor of the form's host: the host itself stays here."""
         self.track(
             "application", outcome=outcome, reason=reason, site=plugin or vendor_of(host), plugin=plugin is not None,
-            forms_model=forms_model, scoring_model=scoring_model, gateway=GATEWAY, steps=steps, seconds=seconds,
+            forms_model=forms_model, scoring_model=scoring_model, gateway=self.gateway, steps=steps, seconds=seconds,
             models=sorted(tokens), input_tokens=sum(taken for taken, _ in tokens.values()),
             output_tokens=sum(given for _, given in tokens.values()),
             tokens_by_model={model: {"input": taken, "output": given} for model, (taken, given) in tokens.items()},

@@ -53,7 +53,24 @@ Linux, and macOS (on a Mac AIHawk finds and scores the jobs, but cannot send app
 curl -LsSf https://raw.githubusercontent.com/feder-cr/Jobs_Applier_AI_Agent/main/run.sh | sh
 ```
 
-You need a key: [get one from OrcaRouter](https://www.orcarouter.ai/ref/ref_accd17afb78fc95ac4d7). Signing up is free, and a new account starts with no credit: add a few dollars there before the first start, or AIHawk cannot read your resume. An application costs a few cents.
+By default you need a key: [get one from OrcaRouter](https://www.orcarouter.ai/ref/ref_accd17afb78fc95ac4d7). Signing up is free, and a new account starts with no credit: add a few dollars there before the first start, or AIHawk cannot read your resume. An application costs a few cents.
+
+### Using your OpenAI API credits instead (this fork)
+
+The direct OpenAI integration is on the `feature/openai-direct-provider` branch. Use the **local checkout of this fork**, not the upstream `run.ps1` installer above (which installs upstream AIHawk). From PowerShell:
+
+```powershell
+Set-Location C:\dev\aihawk
+git switch feature/openai-direct-provider
+git pull --ff-only
+uv sync
+$env:AIHAWK_AI_PROVIDER = "openai"
+$env:OPENAI_API_KEY = Read-Host "OpenAI API key"
+$env:AIHAWK_DRY_RUN = "1"
+uv run aihawk
+```
+
+No OrcaRouter balance or key is required in this mode. The OpenAI API still charges according to usage; view spending in the OpenAI Platform. Never commit API keys. See [provider configuration](docs/configuration.md#direct-openai-no-orcarouter-credits-required).
 
 The first start downloads about 250 MB and takes a minute or two; after that it opens in seconds, also without a connection. Nothing else needs installing first (on Linux, `curl`). The first application brings the browser, about 430 MB more, and opens it in a window: on Linux that needs a desktop.
 
