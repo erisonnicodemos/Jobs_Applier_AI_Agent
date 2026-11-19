@@ -365,7 +365,13 @@ class AIHawk(App[None]):
             self.say(f"{error}{self.resume_next()}")
         except Exception as error:  # noqa: BLE001  The screen stays up and says what went wrong, instead of a traceback over it.
             self.start_failed(error)
-            if isinstance(error, RateLimitError) and error is self.reported and self.remembered and await self.free_plan_told():
+            if (
+                self.session.config.provider == "orcarouter"
+                and isinstance(error, RateLimitError)
+                and error is self.reported
+                and self.remembered
+                and await self.free_plan_told()
+            ):
                 # The same file, read again as r would after the person gave it: the start is made anew.
                 self.resume = self.remembered
                 self.start()
@@ -405,7 +411,7 @@ class AIHawk(App[None]):
         key = await self.take_key()
         if not key:
             telemetry.step("key_missing")
-            self.say(NO_KEY, again=True)
+            self.say("No key yet. Press e, then OpenAI API key." if self.session.config.is_openai else NO_KEY, again=True)
             self.waiting_for_key = True
             return False
         self.session.save_key(key)
@@ -441,7 +447,7 @@ class AIHawk(App[None]):
             self.say("Checking the key…", again=True)
             if await self.session.key_accepted(key):
                 return key
-            self.key_problem = KEY_REFUSED
+            self.key_problem = "OpenAI did not accept that key. Check it and paste it again." if self.session.config.is_openai else KEY_REFUSED
 
     async def read_resume(self) -> bool:
         """The resume given on the command line or asked for, until it is a file, and read; False when the person has none for now."""
@@ -483,6 +489,12 @@ class AIHawk(App[None]):
 
     async def key_prompt(self) -> str | None:
         problem, self.key_problem = self.key_problem, ""
+        if self.session.config.is_openai:
+            return await self.push_screen_wait(TextPrompt(
+                "Paste your OpenAI API key", placeholder="sk-...", password=True,
+                hint="Get a key at platform.openai.com/api-keys · Enter saves · Esc later",
+                problem=problem, link=self.session.config.key_url,
+            ))
         return await self.push_screen_wait(TextPrompt(KEY_QUESTION, placeholder="sk-orca-...", password=True, hint=KEY_HINT, problem=problem, link=KEY_URL))
 
     async def resume_prompt(self) -> Path | None:
@@ -807,7 +819,7 @@ class AIHawk(App[None]):
             ("resume", "Resume", (self.session.resume_name() or "loaded") if config.cv.is_file() else "none yet"),
             ("answers", "Your answers", str(len(self.own_answers()))),
             ("mail", "Your mail", self.mail_words()),
-            ("key", "OrcaRouter key", "saved" if config.api_key() else "none yet"),
+            ("key", "OpenAI API key" if config.is_openai else "OrcaRouter key", "saved" if config.api_key() else "none yet"),
             # The models are not here: a person does not choose one, and aihawk.yaml still changes them.
             ("folder", "Your files", str(config.workspace)),
         ]
@@ -936,7 +948,7 @@ class AIHawk(App[None]):
     async def change_key(self) -> None:
         config = self.session.config
         if config.key_from_environment():
-            self.say(f"The key comes from the {KEY_ENV} variable, which wins over one typed here.")
+            self.say(f"The key comes from the {config.key_env} variable, which wins over one typed here.")
             return
         key = await self.take_key()
         if key:

@@ -16,6 +16,15 @@ DEFAULT_BASE_URL = "https://api.orcarouter.ai/v1"
 KEY_ENV = "ORCAROUTER_API_KEY"
 # Where a person gets a key. A referral link, as the README says: AIHawk gets a share of what is spent through it.
 KEY_URL = "https://www.orcarouter.ai/ref/ref_accd17afb78fc95ac4d7"
+# Direct OpenAI mode is opt-in and never reuses a saved OrcaRouter key.
+PROVIDER_ENV = "AIHAWK_AI_PROVIDER"
+OPENAI_BASE_URL = "https://api.openai.com/v1"
+OPENAI_KEY_ENV = "OPENAI_API_KEY"
+OPENAI_KEY_URL = "https://platform.openai.com/api-keys"
+OPENAI_KEY_FILE = "openai-key"
+OPENAI_MODEL = "gpt-4.1-mini"
+OPENAI_QUICK_MODEL = "gpt-4.1-mini"
+OPENAI_DECISION_MODEL = "gpt-4o-mini"
 # Fills the forms and reads their screenshots. Chosen over z-ai/glm-5.3-flash, which was slower and dearer on the same forms.
 DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash"
 # For the plan and the other short calls of a search. deepseek-v4.1-flash did not keep the plan's nested schema, and
@@ -88,6 +97,7 @@ class Filters:
 @dataclass(frozen=True)
 class Config:
     workspace: Path
+    provider: str = "orcarouter"
     goals: str = ""
     database: str = DEFAULT_DATABASE
     max_age_days: int = DEFAULT_MAX_AGE_DAYS
@@ -114,8 +124,24 @@ class Config:
         return self.workspace / "data"
 
     @property
+    def is_openai(self) -> bool:
+        return self.provider == "openai"
+
+    @property
+    def base_url(self) -> str:
+        return OPENAI_BASE_URL if self.is_openai else DEFAULT_BASE_URL
+
+    @property
+    def key_env(self) -> str:
+        return OPENAI_KEY_ENV if self.is_openai else KEY_ENV
+
+    @property
+    def key_url(self) -> str:
+        return OPENAI_KEY_URL if self.is_openai else KEY_URL
+
+    @property
     def key_file(self) -> Path:
-        return self.workspace / KEY_FILE
+        return self.workspace / (OPENAI_KEY_FILE if self.is_openai else KEY_FILE)
 
     @property
     def browser_profile(self) -> Path:
@@ -124,13 +150,13 @@ class Config:
 
     def api_key(self) -> str:
         """The model's key: from the environment, or the one the person typed in."""
-        from_environment = os.environ.get(KEY_ENV, "").strip()
+        from_environment = os.environ.get(self.key_env, "").strip()
         if from_environment:
             return from_environment
         return self.key_file.read_text(encoding="utf-8-sig").strip() if self.key_file.is_file() else ""
 
     def key_from_environment(self) -> bool:
-        return bool(os.environ.get(KEY_ENV, "").strip())
+        return bool(os.environ.get(self.key_env, "").strip())
 
     def save_key(self, key: str) -> None:
         self.workspace.mkdir(parents=True, exist_ok=True)
@@ -161,6 +187,13 @@ def _items(value: object, name: str) -> list[Any]:
     if not isinstance(value, list):
         raise ConfigError(f"{name} must be a list")
     return value
+
+
+def _provider(value: object) -> str:
+    provider = str(value).strip().lower()
+    if provider not in ("openai", "orcarouter"):
+        raise ConfigError("provider must be 'openai' or 'orcarouter'")
+    return provider
 
 
 def _days(value: object, name: str) -> int:
@@ -235,7 +268,13 @@ def load_config(workspace: Path) -> Config:
     """The settings in the folder. Nothing there yet is a new search, not an error."""
     path = workspace / CONFIG_FILE
     if not path.is_file():
-        return Config(workspace=workspace)
+        provider = _provider(os.environ.get(PROVIDER_ENV) or "orcarouter")
+        return Config(
+            workspace=workspace, provider=provider,
+            model=OPENAI_MODEL if provider == "openai" else DEFAULT_MODEL,
+            quick_model=OPENAI_QUICK_MODEL if provider == "openai" else DEFAULT_QUICK_MODEL,
+            decision_model=OPENAI_DECISION_MODEL if provider == "openai" else DEFAULT_DECISION_MODEL,
+        )
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
     except yaml.YAMLError as error:
@@ -246,14 +285,16 @@ def load_config(workspace: Path) -> Config:
     filters = raw.get("filters") or {}
     if not isinstance(filters, dict):
         raise ConfigError("filters must be a mapping with include, exclude, locations, cities, countries and plan")
+    provider = _provider(os.environ.get(PROVIDER_ENV) or raw.get("provider") or "orcarouter")
     return Config(
         workspace=workspace,
+        provider=provider,
         goals=str(raw.get("goals") or ""),
         database=DEFAULT_DATABASE if str(raw.get("database") or OLD_DATABASE) == OLD_DATABASE else str(raw["database"]),
         max_age_days=_days(raw.get("max_age_days", DEFAULT_MAX_AGE_DAYS), "max_age_days"),
-        model=str(raw.get("model") or DEFAULT_MODEL),
-        quick_model=str(raw.get("quick_model") or DEFAULT_QUICK_MODEL),
-        decision_model=str(raw.get("decision_model") or DEFAULT_DECISION_MODEL),
+        model=str(raw.get("model") or (OPENAI_MODEL if provider == "openai" else DEFAULT_MODEL)),
+        quick_model=str(raw.get("quick_model") or (OPENAI_QUICK_MODEL if provider == "openai" else DEFAULT_QUICK_MODEL)),
+        decision_model=str(raw.get("decision_model") or (OPENAI_DECISION_MODEL if provider == "openai" else DEFAULT_DECISION_MODEL)),
         filters=Filters(
             _words(filters.get("include"), "filters.include"),
             _words(filters.get("exclude"), "filters.exclude"),

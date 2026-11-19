@@ -16,7 +16,7 @@ from openai import AsyncOpenAI
 from aihawk import errors
 from aihawk.apply import MAILBOXES, NOTE, BrowserDidNotOpen, Outcome, apply_to_job, no_browser_here, signed_in, site_of
 from aihawk.apply import sign_in as sign_in_browser
-from aihawk.config import DEFAULT_BASE_URL, KEY_ENV, Config, ConfigError, load_config
+from aihawk.config import Config, ConfigError, load_config
 from aihawk.database import load_manifest, search
 from aihawk.library import Library
 from aihawk.liveness import posting_is_closed
@@ -132,13 +132,13 @@ class Session:
         """The AI service refused the key. One typed in is forgotten, so the next question asks for another; one from the environment is named."""
         self._client = None
         if self.config.key_from_environment():
-            return f"The AI service refused the key in the {KEY_ENV} variable. Set a valid one there, then start AIHawk again."
+            return f"The AI service refused the key in the {self.config.key_env} variable. Set a valid one there, then start AIHawk again."
         self.config.key_file.unlink(missing_ok=True)
         return "The AI service refused the key, so AIHawk forgot it. Paste a new one."
 
     def key_client(self, key: str) -> AsyncOpenAI:
         """A client for a key not yet kept, to try it: no retries, and no waiting long on a service that does not answer."""
-        return AsyncOpenAI(base_url=DEFAULT_BASE_URL, api_key=key, max_retries=0, timeout=15.0)
+        return AsyncOpenAI(base_url=self.config.base_url, api_key=key, max_retries=0, timeout=15.0)
 
     async def key_accepted(self, key: str) -> bool:
         """Whether the service takes this key: its list of models answers a key it does not know with 401 and nothing else is
@@ -154,6 +154,9 @@ class Session:
         or the key's own limit when that is lower); None when that cannot be told: no connection, an answer of another shape, a
         refusal. Only a number says anything, and the check never blocks. Not the OpenAI-shaped billing page: for a key with no
         limit of its own, which is how OrcaRouter makes them, it says 100000000 dollars whatever the account holds."""
+        if self.config.is_openai:
+            # OpenAI has no equivalent of OrcaRouter's spendable_usd endpoint.
+            return None
         try:
             answer = await self.key_client(key).get(BALANCE_PATH, cast_to=dict)
         except Exception:  # noqa: BLE001  Not knowing is not a reason to stop anyone; the first call tells.
@@ -241,7 +244,10 @@ class Session:
         asked = question(self.config.goals, _places(self.config))
         reasons: list[str] = []
         try:
-            values = await fits(self.client, self.config.decision_model, cv, jobs, asked, reasons.append)
+            if self.config.is_openai:
+                values = await fits(self.client, self.config.decision_model, cv, jobs, asked, reasons.append, provider="openai")
+            else:
+                values = await fits(self.client, self.config.decision_model, cv, jobs, asked, reasons.append)
         except Exception as error:
             # Only the client can fail here; a batch that fails is a failed verdict inside fits. A key it refuses is for the
             # screen; one it cannot reach is asked about again, not set aside.
@@ -313,7 +319,8 @@ class Session:
             self.store.set_cost(item.job.id, 0.0)
             return self._ended(item, host, outcome, {}, started, plugin, log)
         # The gateway's price list, read once, so each call's cost can be counted.
-        await SPEND.load_prices(self.client)
+        if not self.config.is_openai:
+            await SPEND.load_prices(self.client)
         mark = SPEND.mark()
         told = NOTE.set(note)
         # Counted before the wait for the engine, so that the engine is either already coming (waited for) or not started.
@@ -366,7 +373,8 @@ class Session:
     async def _record(self, item: Stored, host: str, outcome: Outcome, mark: Mark) -> dict[str, tuple[int, int]]:
         """What came of the application, kept with the job: its account, status, proof and cost. The tokens each model used."""
         self._keep(item, host, outcome)
-        await SPEND.settle(self.client)
+        if not self.config.is_openai:
+            await SPEND.settle(self.client)
         cost, used = SPEND.since(mark)
         self.store.set_cost(item.job.id, cost)
         return used
